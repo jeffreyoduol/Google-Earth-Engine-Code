@@ -1,0 +1,76 @@
+// Create a region of interest
+var countries = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017');
+var roi = countries.filter(ee.Filter.eq('country_na','Kenya'));
+Map.addLayer(roi, {}, 'Kenya', false);
+
+// Load Sentinel data
+var image = ee.ImageCollection("COPERNICUS/S2_SR")
+.filterDate('2020-05-01', '2021-06-30')
+.filterMetadata('CLOUDY_PIXEL_PERCENTAGE','less_than', 10)
+.filterBounds(roi)
+.median()
+;
+var visParamTrue = {bands: ['B4', 'B3', 'B2'], min:0 , max:2500, gamma:1.1};
+Map.addLayer(image.clip(roi), visParamTrue, 'Sentinel 2020');
+Map.centerObject(roi, 6.5);
+
+
+// Create Training Data
+var training = water.merge(forest).merge(cropland).merge(bareland);
+print(training);
+
+var label = 'Class';
+var bands = ['B2', 'B3', 'B4', 'B8'];
+var input = image.select(bands);
+
+// Overlay the points on the imagery to get training
+var trainImage = input.sampleRegions({
+  collection: training,
+  properties: [label],
+  scale: 30
+});
+
+var trainingData = trainImage.randomColumn();
+var trainSet = trainingData.filter(ee.Filter.lessThan('random', 0.8));
+var testSet = trainingData.filter(ee.Filter.greaterThanOrEquals('random', 0.8));
+
+//Classification Model
+var classifier = ee.Classifier.smileCart().train(trainSet, label, bands);
+
+// Classify the image 
+var classified = input.classify(classifier);
+
+//Define a palette for the classification
+var landcoverPalette = [
+'0b27f2', // water (0)  -- blue
+'074708', // forest (1)   --- green
+'eaea10',  // cropland (2)    ---- light green
+'f32e0b', // bareland (3)   --- yellow
+//'130cee', // Water          (4)   ---- blue
+//'f2190b',// ResidentialArea (5)  --- red
+
+];
+Map.addLayer(classified.clip(roi), {palette: landcoverPalette, min:0, max: 4}, 'Classification CART');
+
+
+// Accuracy Assessment
+var confusionMatrix = ee.ConfusionMatrix(testSet.classify(classifier)
+.errorMatrix({
+actual: 'Class',
+predicted: 'classification'
+}));
+
+print('Confusion Matrix:', confusionMatrix);
+print('Overall Accuracy:', confusionMatrix.accuracy());
+
+/*
+// Export classified Map to google Drive
+Export.Image.toDrive({
+image:classified,
+description: "Sentinel_2_CART",
+scale:10,
+region: roi,
+maxPixels:1e13,
+});
+
+*/
